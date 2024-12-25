@@ -1,0 +1,1 @@
+/mnt/s/myData/Documents/task/7.Hacking/inotifywait.py
