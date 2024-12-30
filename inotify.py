@@ -202,6 +202,7 @@ def wait(argv):
         # assign watch descriptor to each target directory
         for path in paths:
             wd = inotify_add_watch(fd, path.encode(), mask)
+            _print_verbose("inotify_add_watch {} {} {} => {}".format(fd, path, ",".join(_decode_flag(mask)), wd))
             _watch_descriptors[wd] = path
         if monitor_mode:
             deleting_watch_descriptor = None
@@ -212,15 +213,19 @@ def wait(argv):
                     [wd, flags, name] = detected
                     #[wd, flags, name] = detected if len(detected) == 3 else [detected[0], detected[1], ""]
                     directory = _watch_descriptors[wd]
+                    # print if this program is called directly. yield python values if this program is called as module.
                     print("{} {} {}".format(directory, ",".join(_decode_flag(flags)), name.replace('\0', '')), flush=True)
                     if recursive_mode:
-                        # if direcotry is created, add it to watch
+                        # if directory is created, add it to watch
                         if (flags & _EVENTS['CREATE'] != 0) and (flags & _EVENTS['ISDIR'] != 0):
-                            path = directory + name.rstrip(os.sep).replace('\0', '') + os.sep
-                            _print_verbose("inotify_add_watch {} {} {}".format(fd, path, ",".join(_decode_flag(mask))))
+                            #path = directory + name.rstrip(os.sep).replace('\0', '') + os.sep
+                            path = directory + name.replace('\0', '') + os.sep
+                            # TODO confirming
                             wd = inotify_add_watch(fd, path.encode(), mask)
+                            #wd = inotify_add_watch(fd, path.encode(), mask)
+                            _print_verbose("inotify_add_watch {} {} {} => {}".format(fd, path, ",".join(_decode_flag(mask)), wd))
                             _watch_descriptors[wd] = path
-                        # if direcotry is deleted, remove it from watch
+                        # if directory is deleted, remove it from watch
                         #elif (flags & _EVENTS['DELETE'] != 0) and (flags & _EVENTS['ISDIR'] != 0):
                         elif (flags & _EVENTS['DELETE_SELF'] != 0):
                             _print_verbose("deleting watch descriptor {}".format(wd))
@@ -235,6 +240,7 @@ def wait(argv):
         else:
             [wd, flags, name] = next(_detect_inotify(fd, timeout))
             directory = _watch_descriptors[wd]
+            # print if this program is called directly. yield python values if this program is called as module.
             print("{} {} {}".format(directory, ",".join(_decode_flag(flags)), name.replace('\0', '')), flush=True)
         _status_code = 0
     except FileNotFoundError as e:
