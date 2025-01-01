@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 
+from types import GeneratorType
 from ctypes import CDLL, CFUNCTYPE, c_char_p, c_int, c_uint32
 from ctypes.util import find_library
 import argparse
 import multiprocessing
 import os
 import pathlib
+import re
 import signal
 import struct
 import sys
@@ -91,6 +93,7 @@ def _detect_inotify(fd, timeout):
     if timeout > 0:
         _reset(timeout, _pid)
     buf = os.read(fd, 4096)
+
     i = 0
     fmt = 'iIII'
     fmt_size = struct.calcsize(fmt)
@@ -101,6 +104,9 @@ def _detect_inotify(fd, timeout):
         i += name_len
         _print_verbose("wd: {} mask: {:08x} path: {}".format(wd, mask, name.decode()))
         yield [wd, mask, name.decode()]
+
+def _output_as_main(directory, flags, name):
+    print("{} {} {}".format(directory, ",".join(flags), name), flush=True)
 
 _status_code = 0
 def wait(argv):
@@ -146,6 +152,13 @@ def wait(argv):
     recursive_mode = args.recursive
     timeout        = args.timeout
     verbose_mode   = args.verbose
+    output_format  = args.format
+    time_format    = args.timefmt
+
+    # reject if timefmt is not specified in format which include it
+    if output_format and re.search('%T', output_format) and not time_format:
+        print("%T is in --format string, but --timefmt was not specified.")
+        sys.exit(1)
 
     # verbose setting if verbose mode
     global _print_verbose
@@ -154,10 +167,12 @@ def wait(argv):
 
     _print_verbose(argv)
 
+
     # set status code at timeout
     signal.signal(signal.SIGQUIT, _handler)
 
     # reveal watch descriptor
+    global _watch_descriptors
     def reveal_watch_descriptors(signum, frame):
         print(_watch_descriptors)
     signal.signal(signal.SIGUSR1, reveal_watch_descriptors)
@@ -182,8 +197,7 @@ def wait(argv):
         mask = 0xfff
 
     print('watching {} for inotify events: {}'.format(
-        args.paths, ",".join(_decode_flag(mask))), file=sys.stderr, flush=True)
-
+        target_paths, ",".join(_decode_flag(mask))), file=sys.stderr, flush=True)
     try:
         fd = inotify_init()
         paths = []
@@ -204,44 +218,11 @@ def wait(argv):
             wd = inotify_add_watch(fd, path.encode(), mask)
             _print_verbose("inotify_add_watch {} {} {} => {}".format(fd, path, ",".join(_decode_flag(mask)), wd))
             _watch_descriptors[wd] = path
+        # output generator if monitor mode, else a row elements.
         if monitor_mode:
-            deleting_watch_descriptor = None
-            while True:
-                gen_detected = _detect_inotify(fd, timeout)
-                for detected in gen_detected:
-                    #del name
-                    [wd, flags, name] = detected
-                    #[wd, flags, name] = detected if len(detected) == 3 else [detected[0], detected[1], ""]
-                    directory = _watch_descriptors[wd]
-                    # print if this program is called directly. yield python values if this program is called as module.
-                    print("{} {} {}".format(directory, ",".join(_decode_flag(flags)), name.replace('\0', '')), flush=True)
-                    if recursive_mode:
-                        # if directory is created, add it to watch
-                        if (flags & _EVENTS['CREATE'] != 0) and (flags & _EVENTS['ISDIR'] != 0):
-                            #path = directory + name.rstrip(os.sep).replace('\0', '') + os.sep
-                            path = directory + name.replace('\0', '') + os.sep
-                            # TODO confirming
-                            wd = inotify_add_watch(fd, path.encode(), mask)
-                            #wd = inotify_add_watch(fd, path.encode(), mask)
-                            _print_verbose("inotify_add_watch {} {} {} => {}".format(fd, path, ",".join(_decode_flag(mask)), wd))
-                            _watch_descriptors[wd] = path
-                        # if directory is deleted, remove it from watch
-                        #elif (flags & _EVENTS['DELETE'] != 0) and (flags & _EVENTS['ISDIR'] != 0):
-                        elif (flags & _EVENTS['DELETE_SELF'] != 0):
-                            _print_verbose("deleting watch descriptor {}".format(wd))
-                            deleting_watch_descriptor = wd
-                        elif (flags & _EVENTS['IGNORED'] != 0):
-                            if not deleting_watch_descriptor:
-                                continue
-                            _print_verbose("inotify_rm_watch {} {}".format(fd, wd))
-                            inotify_rm_watch(fd, wd)
-                            del _watch_descriptors[wd]
-                            deleting_watch_descriptor = None
+            return detect(fd, mask, monitor_mode, recursive_mode, timeout)
         else:
-            [wd, flags, name] = next(_detect_inotify(fd, timeout))
-            directory = _watch_descriptors[wd]
-            # print if this program is called directly. yield python values if this program is called as module.
-            print("{} {} {}".format(directory, ",".join(_decode_flag(flags)), name.replace('\0', '')), flush=True)
+            return next(detect(fd, mask, monitor_mode, recursive_mode, timeout))
         _status_code = 0
     except FileNotFoundError as e:
         _print_verbose(e)
@@ -249,6 +230,51 @@ def wait(argv):
     except KeyboardInterrupt:
         _print_verbose("KeyboardInterrupt")
         _status_code = 130
+    return _status_code
+
+def detect(fd, mask, monitor_mode=False, recursive_mode=False, timeout=0):
+    try:
+        #if monitor_mode:
+        deleting_watch_descriptor = None
+        while True:
+            #print(next(_detect_inotify(fd, timeout)))
+            gen_detected = _detect_inotify(fd, timeout)
+            for detected in gen_detected:
+                #del name
+                [wd, flags, name] = detected
+                #[wd, flags, name] = detected if len(detected) == 3 else [detected[0], detected[1], ""]
+                directory = _watch_descriptors[wd]
+                # print if this program is called directly. yield python values if this program is called as module.
+                #print("{} {} {}".format(directory, ",".join(_decode_flag(flags)), name.replace('\0', '')), flush=True)
+                yield directory, _decode_flag(flags), name.replace('\0', '')
+
+                if recursive_mode:
+                    # if directory is created, add it to watch
+                    if (flags & _EVENTS['CREATE'] != 0) and (flags & _EVENTS['ISDIR'] != 0):
+                        #path = directory + name.rstrip(os.sep).replace('\0', '') + os.sep
+                        path = directory + name.replace('\0', '') + os.sep
+                        # TODO confirming
+                        wd = inotify_add_watch(fd, path.encode(), mask)
+                        #wd = inotify_add_watch(fd, path.encode(), mask)
+                        _print_verbose("inotify_add_watch {} {} {} => {}".format(fd, path, ",".join(_decode_flag(mask)), wd))
+                        _watch_descriptors[wd] = path
+                    # if directory is deleted, remove it from watch
+                    #elif (flags & _EVENTS['DELETE'] != 0) and (flags & _EVENTS['ISDIR'] != 0):
+                    elif (flags & _EVENTS['DELETE_SELF'] != 0):
+                        _print_verbose("deleting watch descriptor {}".format(wd))
+                        deleting_watch_descriptor = wd
+                    elif (flags & _EVENTS['IGNORED'] != 0):
+                        if not deleting_watch_descriptor:
+                            continue
+                        _print_verbose("inotify_rm_watch {} {}".format(fd, wd))
+                        inotify_rm_watch(fd, wd)
+                        del _watch_descriptors[wd]
+                        deleting_watch_descriptor = None
+        #else:
+        #    [wd, flags, name] = next(_detect_inotify(fd, timeout))
+        #    directory = _watch_descriptors[wd]
+        #    # print if this program is called directly. yield python values if this program is called as module.
+        #    yield directory, _decode_flag(flags), name.replace('\0', '')
     finally:
         global _process
         if _process:
@@ -256,7 +282,11 @@ def wait(argv):
         for wd in _watch_descriptors.keys():
             inotify_rm_watch(fd, wd)
         os.close(fd)
-    return _status_code
 
 if __name__ == '__main__':
-    sys.exit(wait(sys.argv[1:]))
+    detect_results = wait(sys.argv[1:])
+    if isinstance(detect_results, GeneratorType):
+        for directory, mask, name in detect_results:
+            _output_as_main(directory, mask, name)
+    else:
+        _output_as_main(*detect_results)
