@@ -4,6 +4,7 @@ from types import GeneratorType
 from ctypes import CDLL, CFUNCTYPE, c_char_p, c_int, c_uint32
 from ctypes.util import find_library
 import argparse
+from datetime import datetime
 import multiprocessing
 import os
 import pathlib
@@ -11,6 +12,7 @@ import re
 import signal
 import struct
 import sys
+import textwrap
 import time
 
 def _print_verbose(*args):
@@ -89,28 +91,55 @@ def _reset(timeout, pid):
 
 _pid = os.getpid()
 def _detect_inotify(fd, timeout):
-    global _pid
-    if timeout > 0:
-        _reset(timeout, _pid)
-    buf = os.read(fd, 4096)
+    try:
+        global _pid
+        if timeout > 0:
+            _reset(timeout, _pid)
+        buf = os.read(fd, 4096)
 
-    i = 0
-    fmt = 'iIII'
-    fmt_size = struct.calcsize(fmt)
-    while i < len(buf):
-        wd, mask, cookie, name_len = struct.unpack_from(fmt, buf, i)
-        i += fmt_size
-        name = buf[i:i+name_len]
-        i += name_len
-        _print_verbose("wd: {} mask: {:08x} path: {}".format(wd, mask, name.decode()))
-        yield [wd, mask, name.decode()]
+        i = 0
+        fmt = 'iIII'
+        fmt_size = struct.calcsize(fmt)
+        while i < len(buf):
+            wd, mask, cookie, name_len = struct.unpack_from(fmt, buf, i)
+            i += fmt_size
+            name = buf[i:i+name_len]
+            i += name_len
+            _print_verbose("wd: {} mask: {:08x} path: {}".format(wd, mask, name.decode()))
+            yield [wd, mask, name.decode()]
+    except KeyboardInterrupt:
+        _print_verbose("KeyboardInterrupt")
+        print()
+        sys.exit(130)
 
+_format_string = ""
+_timefmt_string = ""
 def _output_as_main(directory, flags, name):
-    print("{} {} {}".format(directory, ",".join(flags), name), flush=True)
+    global _format_string, _timefmt_string
+    if _format_string:
+        format_string = _format_string
+        seps = re.findall("%(.?)e", format_string)
+    else:
+        format_string = '%w %e %f'
+        seps = [""]
+    output = format_string.replace('%w', directory).replace('%f', name)
+    for sep in seps:
+        separator = "," if not sep else sep
+        #print(f"pattern = {'%' + sep + 'e'} separator = {separator} flags = {flags}")
+        output = output.replace('%' + sep + 'e', separator.join(flags), 1)
+    if "%T" in output:
+        output = output.replace('%T', datetime.now().strftime(_timefmt_string))
+    print(output)
 
 _status_code = 0
 def wait(argv):
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description=textwrap.dedent(
+            """
+            Using as module, output is [directory, flags, filename]. Output is not specified.
+            Using as command, default output is "directory, flags, filename". Output is specified by --format option and --timefmt option
+            """).strip()
+    )
     parser.add_argument('paths', metavar='path', nargs='+', help='directory or file to watch')
     parser.add_argument('-e', '--event', action='append', default=[], type=str,
         #choices=[x for x in _EVENTS.keys()],
@@ -142,7 +171,8 @@ def wait(argv):
        %%T     Replaced with the current Time in the format specified by the --timefmt option, which should be a  for‐
               mat string suitable for passing to strftime(3).""")
     parser.add_argument('--timefmt', required=False, metavar='<fmt>',
-        help="Set a time format string as accepted by strftime(3) for use with the `%%T' conversion in the --format option.")
+        help="""Set a time format string as accepted by python3 datetime module strftime method for use with the `%%T' conversion in the --format option.
+https://docs.python.org/ja/3/library/datetime.html#strftime-and-strptime-format-codes""")
 
     args = parser.parse_args(argv)
 
@@ -155,10 +185,20 @@ def wait(argv):
     output_format  = args.format
     time_format    = args.timefmt
 
-    # reject if timefmt is not specified in format which include it
+    # reject --format option and --timefmt option if this program is used as module.
+    if __name__ != '__main__' and (output_format or time_format):
+        print("Using inotify.py as module, output is [directory, flags, filename]. --format option and --timefmt option may not be specified.")
+        sys.exit(1)
+         
+    # reject --format option if --timefmt option is not specified in format which include it
     if output_format and re.search('%T', output_format) and not time_format:
         print("%T is in --format string, but --timefmt was not specified.")
         sys.exit(1)
+
+    # assign format and timefmt
+    global _format_string, _timefmt_string
+    _format_string = output_format
+    _timefmt_string = time_format
 
     # verbose setting if verbose mode
     global _print_verbose
@@ -220,32 +260,24 @@ def wait(argv):
             _watch_descriptors[wd] = path
         # output generator if monitor mode, else a row elements.
         if monitor_mode:
-            return detect(fd, mask, monitor_mode, recursive_mode, timeout)
+            return _detect(fd, mask, monitor_mode, recursive_mode, timeout)
         else:
-            return next(detect(fd, mask, monitor_mode, recursive_mode, timeout))
+            return next(_detect(fd, mask, monitor_mode, recursive_mode, timeout))
         _status_code = 0
     except FileNotFoundError as e:
         _print_verbose(e)
         _status_code = 1
-    except KeyboardInterrupt:
-        _print_verbose("KeyboardInterrupt")
-        _status_code = 130
     return _status_code
 
-def detect(fd, mask, monitor_mode=False, recursive_mode=False, timeout=0):
+def _detect(fd, mask, monitor_mode=False, recursive_mode=False, timeout=0):
     try:
-        #if monitor_mode:
         deleting_watch_descriptor = None
         while True:
-            #print(next(_detect_inotify(fd, timeout)))
             gen_detected = _detect_inotify(fd, timeout)
             for detected in gen_detected:
-                #del name
                 [wd, flags, name] = detected
-                #[wd, flags, name] = detected if len(detected) == 3 else [detected[0], detected[1], ""]
                 directory = _watch_descriptors[wd]
-                # print if this program is called directly. yield python values if this program is called as module.
-                #print("{} {} {}".format(directory, ",".join(_decode_flag(flags)), name.replace('\0', '')), flush=True)
+                # output an inotify detection result
                 yield directory, _decode_flag(flags), name.replace('\0', '')
 
                 if recursive_mode:
@@ -270,11 +302,6 @@ def detect(fd, mask, monitor_mode=False, recursive_mode=False, timeout=0):
                         inotify_rm_watch(fd, wd)
                         del _watch_descriptors[wd]
                         deleting_watch_descriptor = None
-        #else:
-        #    [wd, flags, name] = next(_detect_inotify(fd, timeout))
-        #    directory = _watch_descriptors[wd]
-        #    # print if this program is called directly. yield python values if this program is called as module.
-        #    yield directory, _decode_flag(flags), name.replace('\0', '')
     finally:
         global _process
         if _process:
