@@ -1,12 +1,16 @@
+from datetime import datetime
+import errno
+import multiprocessing
 import os
 import pytest
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
 
-command = ["python3", "inotify.py"]
-#command = ["inotifywait"]
+#command = ["python3", "inotify.py"]
+command = ["inotifywait"]
 
 def test_inotifywait_file_creation():
     """
@@ -534,6 +538,89 @@ def test_inotifywait_no_event_outside_watched_dir():
                 stdout, stderr = process.communicate(timeout=1)
             except subprocess.TimeoutExpired:
                 assert stdout == None
+
+        finally:
+            # Terminate the inotifywait process
+            process.terminate()
+            process.wait()
+
+def test_inotifywait_create_directory_in_directory_created():
+    """
+    Test that inotifywait detects directory creation events.
+    """
+    with tempfile.TemporaryDirectory() as tempdir:
+        watched_dir = tempdir
+        test_create_dir = os.path.join(watched_dir, "create_dir")
+        test_subdir = os.path.join(test_create_dir, "subdir")
+
+        # Start inotifywait as a subprocess to monitor the directory
+        cmd = [*command, "-m", "-r", watched_dir]
+        process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        try:
+            # Create a directory
+            os.mkdir(test_create_dir)
+
+            # Give inotifywait some time to start
+            time.sleep(1)
+
+            # Create a subdirectory
+            os.mkdir(test_subdir)
+
+            stdout_line = []
+
+            # Set timeout alarm
+            #def raise_exception(signum, frame):
+            #    raise TimeoutError
+            #signal.signal(signal.SIGALRM, raise_exception)
+            signal.signal(signal.SIGALRM, lambda signum, frame: exec('raise TimeoutError'))
+            signal.alarm(2)
+            try:
+                while True:
+                    line = process.stdout.readline().rstrip()
+                    #print(f"line = {line}")
+                    stdout_line.append(line)
+            except TimeoutError:
+                pass
+            finally:
+                print(stdout_line)
+
+            # Check if inotifywait output matches the expected event
+            expected_output = f"{test_create_dir}/ CREATE,ISDIR subdir"
+            assert expected_output in stdout_line
+
+        finally:
+            # Terminate the inotifywait process
+            process.terminate()
+            process.wait()
+
+def test_inotifywait_print_timestamp():
+    """
+    Test that inotifywait detects file creation events.
+    """
+    with tempfile.TemporaryDirectory() as tempdir:
+        watched_dir = tempdir
+        test_subdir = os.path.join(watched_dir, "testdir")
+
+        # Start inotifywait as a subprocess to monitor the directory
+        cmd = [*command, "-m", "-e", "create", "--format", "%T", "--timefmt", "%Y/%m/%d %H:%M", watched_dir]
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        try:
+            # Give inotifywait some time to start
+            time.sleep(1)
+
+            # Get current time
+            current_time = datetime.now()
+            # Create a subdirectory
+            os.mkdir(test_subdir)
+
+            # Wait for inotifywait output
+            stdout_line = process.stdout.readline().strip()
+            
+            # Check if inotifywait output matches the expected event
+            expected_output = current_time.strftime("%Y/%m/%d %H:%M")
+            assert expected_output == stdout_line
 
         finally:
             # Terminate the inotifywait process
