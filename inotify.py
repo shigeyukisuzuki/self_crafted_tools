@@ -9,6 +9,7 @@ import multiprocessing
 import os
 import pathlib
 import re
+import shlex
 import signal
 import struct
 import sys
@@ -109,7 +110,7 @@ def _detect_inotify(fd, timeout):
             yield [wd, mask, name.decode()]
     except KeyboardInterrupt:
         _print_verbose("KeyboardInterrupt")
-        print()
+        print("", flush=True)
         sys.exit(130)
 
 _format_string = ""
@@ -117,7 +118,7 @@ _timefmt_string = ""
 def _output_as_main(directory, flags, name):
     global _format_string, _timefmt_string
     if _format_string:
-        format_string = _format_string
+        format_string = _format_string.replace('%%', '\0')
         seps = re.findall("%(.?)e", format_string)
     else:
         format_string = '%w %e %f'
@@ -129,7 +130,8 @@ def _output_as_main(directory, flags, name):
         output = output.replace('%' + sep + 'e', separator.join(flags), 1)
     if "%T" in output:
         output = output.replace('%T', datetime.now().strftime(_timefmt_string))
-    print(output)
+    output = output.replace('\0', '%')
+    print(output, flush=True)
 
 _status_code = 0
 def wait(argv):
@@ -174,6 +176,9 @@ def wait(argv):
         help="""Set a time format string as accepted by python3 datetime module strftime method for use with the `%%T' conversion in the --format option.
 https://docs.python.org/ja/3/library/datetime.html#strftime-and-strptime-format-codes""")
 
+    # if used as module, input argments are parsed like shell argments.
+    if __name__ != '__main__':
+        argv = shlex.split(argv)
     args = parser.parse_args(argv)
 
     events_inputs  = args.event
@@ -187,12 +192,12 @@ https://docs.python.org/ja/3/library/datetime.html#strftime-and-strptime-format-
 
     # reject --format option and --timefmt option if this program is used as module.
     if __name__ != '__main__' and (output_format or time_format):
-        print("Using inotify.py as module, output is [directory, flags, filename]. --format option and --timefmt option may not be specified.")
+        print("Using inotify.py as module, output is [directory, flags, filename]. --format option and --timefmt option may not be specified.", flush=True)
         sys.exit(1)
          
     # reject --format option if --timefmt option is not specified in format which include it
     if output_format and re.search('%T', output_format) and not time_format:
-        print("%T is in --format string, but --timefmt was not specified.")
+        print("%T is in --format string, but --timefmt was not specified.", flush=True)
         sys.exit(1)
 
     # assign format and timefmt
@@ -214,7 +219,7 @@ https://docs.python.org/ja/3/library/datetime.html#strftime-and-strptime-format-
     # reveal watch descriptor
     global _watch_descriptors
     def reveal_watch_descriptors(signum, frame):
-        print(_watch_descriptors)
+        print(_watch_descriptors, flush=True)
     signal.signal(signal.SIGUSR1, reveal_watch_descriptors)
 
     # parse event option input
