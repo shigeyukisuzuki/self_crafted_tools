@@ -1,5 +1,4 @@
 from datetime import datetime
-import errno
 import multiprocessing
 import os
 import pytest
@@ -9,8 +8,8 @@ import subprocess
 import tempfile
 import time
 
-#command = ["python3", "inotify.py"]
-command = ["inotifywait"]
+command = ["python3", "inotify.py"]
+#command = ["inotifywait"]
 
 def test_inotifywait_file_creation():
     """
@@ -21,6 +20,7 @@ def test_inotifywait_file_creation():
         test_file = os.path.join(watched_dir, "testfile.txt")
 
         # Start inotifywait as a subprocess to monitor the directory
+        #cmd = [*command, "-e", "create", watched_dir]
         cmd = [*command, "-m", "-e", "create", watched_dir]
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
@@ -578,12 +578,12 @@ def test_inotifywait_create_directory_in_directory_created():
             try:
                 while True:
                     line = process.stdout.readline().rstrip()
-                    #print(f"line = {line}")
                     stdout_line.append(line)
             except TimeoutError:
                 pass
             finally:
-                print(stdout_line)
+                pass
+                #print(stdout_line)
 
             # Check if inotifywait output matches the expected event
             expected_output = f"{test_create_dir}/ CREATE,ISDIR subdir"
@@ -596,7 +596,7 @@ def test_inotifywait_create_directory_in_directory_created():
 
 def test_inotifywait_print_timestamp():
     """
-    Test that inotifywait detects file creation events.
+    Test that inotifywait print timestamp option
     """
     with tempfile.TemporaryDirectory() as tempdir:
         watched_dir = tempdir
@@ -620,6 +620,38 @@ def test_inotifywait_print_timestamp():
             
             # Check if inotifywait output matches the expected event
             expected_output = current_time.strftime("%Y/%m/%d %H:%M")
+            assert expected_output == stdout_line
+
+        finally:
+            # Terminate the inotifywait process
+            process.terminate()
+            process.wait()
+
+def test_inotifywait_print_with_format():
+    """
+    Test that inotifywait print format option
+    """
+    with tempfile.TemporaryDirectory() as tempdir:
+        watched_dir = tempdir
+        test_subdir = os.path.join(watched_dir, "testdir")
+
+        # Start inotifywait as a subprocess to monitor the directory
+        cmd = [*command, "-m", "-e", "create", "--format", "%f %e %:e %|e %::e %%e %w", watched_dir]
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        try:
+            # Give inotifywait some time to start
+            time.sleep(1)
+
+            # Create a subdirectory
+            os.mkdir(test_subdir)
+
+            # Wait for inotifywait output
+            stdout_line = process.stdout.readline().rstrip()
+            #print(stdout_line)
+            
+            # Check if inotifywait output matches the expected event
+            expected_output = f"testdir CREATE,ISDIR CREATE:ISDIR CREATE|ISDIR %::e %e {watched_dir}/"
             assert expected_output == stdout_line
 
         finally:
