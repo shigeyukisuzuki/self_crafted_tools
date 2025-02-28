@@ -247,6 +247,7 @@ https://docs.python.org/ja/3/library/datetime.html#strftime-and-strptime-format-
         fd = inotify_init()
         paths = []
         for path in target_paths:
+            path = os.path.normpath(path)
             if not pathlib.Path(path).exists():
                 raise FileNotFoundError(f"specified file is not exist: {path}")
             if pathlib.Path(path).is_dir():
@@ -282,8 +283,10 @@ def _detect(fd, mask, monitor_mode=False, recursive_mode=False, timeout=0):
             for detected in gen_detected:
                 [wd, flags, name] = detected
                 directory = _watch_descriptors[wd]
-                # output an inotify detection result
-                yield directory, _decode_flag(flags), name.replace('\0', '')
+                # IGNORED event to skip print
+                if not (flags & _EVENTS['IGNORED'] != 0):
+                    # output an inotify detection result
+                    yield directory, _decode_flag(flags), name.replace('\0', '')
 
                 if recursive_mode:
                     # if directory is created, add it to watch
