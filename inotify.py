@@ -134,6 +134,7 @@ def _output_as_main(directory, flags, name):
     print(output, flush=True)
 
 _status_code = 0
+_include_create_event = False
 def wait(argv):
     parser = argparse.ArgumentParser(
         description=textwrap.dedent(
@@ -241,8 +242,19 @@ https://docs.python.org/ja/3/library/datetime.html#strftime-and-strptime-format-
     if mask == 0:
         mask = 0xfff
 
+    # enable create detection if not specified
+    global _include_create_event
+    if (mask & _EVENTS['CREATE'] != 0):
+        _include_create_event = True
+    else:
+        _include_create_event = False
+        if recursive_mode:
+            mask |= _EVENTS['CREATE']
+    _print_verbose(f"include create events: {_include_create_event}")
+
     print('watching {} for inotify events: {}'.format(
         target_paths, ",".join(_decode_flag(mask))), file=sys.stderr, flush=True)
+
     try:
         fd = inotify_init()
         paths = []
@@ -278,13 +290,15 @@ https://docs.python.org/ja/3/library/datetime.html#strftime-and-strptime-format-
 def _detect(fd, mask, monitor_mode=False, recursive_mode=False, timeout=0):
     try:
         deleting_watch_descriptor = None
+        global _include_create_event
         while True:
             gen_detected = _detect_inotify(fd, timeout)
             for detected in gen_detected:
                 [wd, flags, name] = detected
                 directory = _watch_descriptors[wd]
                 # IGNORED event to skip print
-                if not (flags & _EVENTS['IGNORED'] != 0):
+                if not ((flags & _EVENTS['IGNORED'] != 0) or
+                        (flags & _EVENTS['CREATE'] != 0) and not _include_create_event):
                     # output an inotify detection result
                     yield directory, _decode_flag(flags), name.replace('\0', '')
 
@@ -299,16 +313,17 @@ def _detect(fd, mask, monitor_mode=False, recursive_mode=False, timeout=0):
                         _print_verbose("inotify_add_watch {} {} {} => {}".format(fd, path, ",".join(_decode_flag(mask)), wd))
                         _watch_descriptors[wd] = path
                     # if directory is deleted, remove it from watch
-                    #elif (flags & _EVENTS['DELETE'] != 0) and (flags & _EVENTS['ISDIR'] != 0):
                     elif (flags & _EVENTS['DELETE_SELF'] != 0):
                         _print_verbose("deleting watch descriptor {}".format(wd))
                         deleting_watch_descriptor = wd
-                    elif (flags & _EVENTS['IGNORED'] != 0):
+                    #elif (flags & _EVENTS['IGNORED'] != 0):
+                    elif (flags & _EVENTS['DELETE'] != 0) and (flags & _EVENTS['ISDIR'] != 0):
                         if not deleting_watch_descriptor:
+                            _print_verbose("cannot find deleting_watch_descriptor {}".format(deleting_watch_descriptor))
                             continue
-                        _print_verbose("inotify_rm_watch {} {}".format(fd, wd))
-                        inotify_rm_watch(fd, wd)
-                        del _watch_descriptors[wd]
+                        _print_verbose("inotify_rm_watch {} {}".format(fd, deleting_watch_descriptor))
+                        inotify_rm_watch(fd, deleting_watch_descriptor)
+                        del _watch_descriptors[deleting_watch_descriptor]
                         deleting_watch_descriptor = None
     finally:
         global _process
