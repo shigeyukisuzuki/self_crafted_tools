@@ -305,13 +305,15 @@ def _detect(fd, mask, monitor_mode=False, recursive_mode=False, timeout=0):
                 if recursive_mode:
                     # if directory is created, add it to watch
                     if (flags & _EVENTS['CREATE'] != 0) and (flags & _EVENTS['ISDIR'] != 0):
-                        #path = directory + name.rstrip(os.sep).replace('\0', '') + os.sep
+                        ##path = directory + name.rstrip(os.sep).replace('\0', '') + os.sep
                         path = directory + name.replace('\0', '') + os.sep
-                        # TODO confirming
-                        wd = inotify_add_watch(fd, path.encode(), mask)
-                        #wd = inotify_add_watch(fd, path.encode(), mask)
-                        _print_verbose("inotify_add_watch {} {} {} => {}".format(fd, path, ",".join(_decode_flag(mask)), wd))
-                        _watch_descriptors[wd] = path
+                        # assuming file or directory made in the catched directory, add watch of them recursively
+                        for dirpath, dirnames, filenames in os.walk(path):
+                            #print(f"dirpath: {dirpath} dirnames: {dirnames} filenames: {filenames}")
+                            path = dirpath
+                            wd = inotify_add_watch(fd, path.encode(), mask)
+                            _print_verbose("inotify_add_watch {} {} {} => {}".format(fd, path, ",".join(_decode_flag(mask)), wd))
+                            _watch_descriptors[wd] = path
                     # if directory is deleted, remove it from watch
                     elif (flags & _EVENTS['DELETE_SELF'] != 0):
                         _print_verbose("deleting watch descriptor {}".format(wd))
