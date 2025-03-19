@@ -308,8 +308,7 @@ def _detect(fd, mask, monitor_mode=False, recursive_mode=False, timeout=0):
                         ##path = directory + name.rstrip(os.sep).replace('\0', '') + os.sep
                         path = directory + name.replace('\0', '') + os.sep
                         # assuming file or directory made in the catched directory, add watch of them recursively
-                        for dirpath, dirnames, filenames in os.walk(path):
-                            #print(f"dirpath: {dirpath} dirnames: {dirnames} filenames: {filenames}")
+                        for dirpath, _, _ in os.walk(path):
                             path = dirpath
                             wd = inotify_add_watch(fd, path.encode(), mask)
                             _print_verbose("inotify_add_watch {} {} {} => {}".format(fd, path, ",".join(_decode_flag(mask)), wd))
